@@ -1,0 +1,26 @@
+# Given / generated data — provided by the course, not ours to publish
+Data2024/
+Data2024.zip
+Predictions/
+*.csv
+
+# Task sheet, submitted report, and the external reference paper
+DataChallenge.docx
+Einreichung.docx
+L6_data_challenge.pdf
+es2013-84.pdf
+
+# RapidMiner autosave/lock artifacts
+*.rmp~
+*.rmp.lock
+*.rmp
+*.xml
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
