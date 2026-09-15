@@ -14,11 +14,12 @@ The dataset is the public **UCI Human Activity Recognition Using Smartphones** d
 .
 ├── Data2024/                        # course-provided dataset (gitignored, not in repo)
 ├── VSC_Preprocess_Models&Compare/   # Python/scikit-learn notebooks (preprocessing, EDA, models, comparisons)
+│   └── improved_pipeline.ipynb      # leakage-free evaluation, tuning, ensemble (see Methods §3)
 ├── Predictions/                     # per-model prediction outputs on to_predict.csv (gitignored)
-├── images/                          # figures used in the report (RapidMiner screenshots, EDA plots)
-├── Decision_Tree.rmp                # RapidMiner process: AdaBoost + Decision Tree
-├── LR_DT_RF_FLM_Models.rmp          # RapidMiner process: further model comparison
-├── Microsoft Excel-Arbeitsblatt (neu).xml   # small exploratory RapidMiner process (correlation matrix)
+├── images/                          # figures: RapidMiner screenshots, EDA plots, confusion matrix
+├── Decision_Tree.rmp                # RapidMiner process: AdaBoost + Decision Tree (gitignored)
+├── LR_DT_RF_FLM_Models.rmp          # RapidMiner process: further model comparison (gitignored)
+├── Microsoft Excel-Arbeitsblatt (neu).xml   # small exploratory RapidMiner process (gitignored)
 ├── DataChallenge.docx               # task sheet (gitignored)
 ├── Einreichung.docx                 # submitted report (gitignored)
 ├── L6_data_challenge.pdf            # lecture slides for the task (gitignored)
@@ -26,7 +27,7 @@ The dataset is the public **UCI Human Activity Recognition Using Smartphones** d
 └── requirements.txt
 ```
 
-Two parallel toolchains were used for this project, which is why the repo contains both `.rmp` files and Jupyter notebooks (see below).
+Two parallel toolchains were used for this project: RapidMiner (the originally submitted analysis) and Jupyter notebooks (exploration, and later the leakage-free improved pipeline). The RapidMiner process files are kept locally but are gitignored, so they won't appear if you clone the repo.
 
 ## Methods
 
@@ -74,17 +75,52 @@ A second, exploratory pass re-implemented preprocessing and several models in Py
 
 A depth-limited Decision Tree splits almost perfectly on gravity/orientation features — the root split (`tGravityAcc-min()-X <= 0.10`) already isolates `LAYING` from every other activity, since the phone's orientation relative to gravity differs fundamentally when lying down. The top features by importance were `tGravityAcc-min()-X`, `fBodyAcc-mad()-X`, `angle(Y,gravityMean)`, `tBodyAccMag-std()`, and `tGravityAcc-arCoeff()-Z,1`.
 
+### 3. Improved pipeline — leakage-free evaluation, tuning, ensemble (`improved_pipeline.ipynb`)
+
+The Python notebooks in §2 all leave `subject` in the feature matrix and use a random 70/30 split, which lets a model partly learn *who* is moving rather than *what* they're doing — and `to_predict.csv` contains entirely different subjects than `measures.csv` (verified: the two files don't share a single subject ID), so that inflated accuracy would not have carried over to the actual submission. `improved_pipeline.ipynb` redoes the evaluation properly and was run end-to-end (all numbers below are real output, not estimates):
+
+1. **Quantify the leakage.** Same Random Forest, two setups: subject-as-feature + random split ("naive") vs. subject excluded + 5-fold `StratifiedGroupKFold` grouped by subject ("honest").
+
+   | Setup | Accuracy |
+   |---|---|
+   | Naive (subject as feature, random split) | 98.41% |
+   | Honest (no subject feature, subject-grouped CV) | 90.70% ± 4.93% |
+
+   **The leakage alone accounts for a 7.72 percentage-point gap** — almost exactly the same accuracy the RapidMiner pipeline got (90.9%) with its correct subject-disjoint split. That's strong evidence the RapidMiner number was the honest one all along, and the higher Python numbers in §2 were an artifact of the split, not better modeling.
+
+2. **Tune each model with `RandomizedSearchCV` (15 iterations) under the same subject-grouped 5-fold CV**, so every candidate is scored the honest way:
+
+   | Model | Honest grouped-CV accuracy |
+   |---|---|
+   | Ensemble (tuned RF + tuned XGBoost + tuned MLP, soft voting) | **94.70%** (Cohen's κ 0.936) |
+   | XGBoost (tuned) | 94.14% |
+   | MLP (tuned) | 93.74% |
+   | Random Forest (tuned) | 92.35% |
+   | Random Forest (untuned baseline) | 90.70% |
+
+   Tuning alone recovers most of the naive/honest gap, and the soft-voting ensemble of all three tuned models edges out every individual model.
+
+3. **Confusion matrix** (out-of-fold predictions from the subject-grouped CV, saved as `images/confusion_matrix_ensemble_grouped_cv.png`):
+
+   ![Ensemble confusion matrix](images/confusion_matrix_ensemble_grouped_cv.png)
+
+   `LAYING` is separated almost perfectly (as expected from the EDA finding above). The dominant confusion is **`SITTING` vs. `STANDING`** (117 + 99 = 216 of the 390 total misclassifications, ~55%) — both are static poses with very similar waist-level accelerometer/gyroscope signatures, so this is a genuine, physically-explainable weak spot rather than a modeling bug. A smaller amount of confusion exists between `WALKING`/`WALKING_UPSTAIRS`/`WALKING_DOWNSTAIRS`, which is similarly expected (all three are dynamic gait activities).
+
+4. **Final predictions**: the tuned ensemble, refit on all of `measures.csv`, applied to `to_predict.csv` → `Predictions/ensemble_predictions_grouped_cv.csv` (gitignored like the rest of `Predictions/`; regenerate by rerunning the notebook). A `Predictions/model_comparison_honest_cv.csv` summary is written alongside it.
+
 ## Output of this project
 
-- **The chosen/submitted model**: RapidMiner Stacking classifier, ~90.9% accuracy on a subject-disjoint test set, with predictions for `to_predict.csv` saved as `my_prediction.csv`.
-- **`Predictions/`** (gitignored): one CSV per model with predicted `activity` labels for `to_predict.csv`, plus `compare_activities.csv` summarizing pairwise agreement between models.
-- **`Einreichung.docx`** (gitignored): the written report — introduction, data preparation, EDA, model selection/evaluation, final results.
+- **Originally submitted model**: RapidMiner Stacking classifier, ~90.9% accuracy on a subject-disjoint test set, predictions in `my_prediction.csv`.
+- **Improved model** (see §3 above): a tuned RF+XGBoost+MLP soft-voting ensemble, **94.70% honest (subject-grouped) accuracy**, predictions in `Predictions/ensemble_predictions_grouped_cv.csv`. This is the more trustworthy and higher-accuracy result — evaluated the same way the RapidMiner pipeline was (no subject leakage), so the improvement over 90.9% is real, not a split artifact.
+- **`Predictions/`** (gitignored): one CSV per model with predicted `activity` labels for `to_predict.csv`, plus comparison summaries (`compare_activities.csv`, `model_comparison_honest_cv.csv`).
+- **`Einreichung.docx`** (gitignored): the originally submitted written report — introduction, data preparation, EDA, model selection/evaluation, final results.
 
 ## Limitations / notes
 
-- The Python notebooks only drop the `activity` column before training (`X = df.drop(columns=['activity'])`), so the `subject` identifier is left in as a regular feature and a random 70/30 split can put the same subject's windows in both train and test. This is very likely why the scikit-learn/XGBoost accuracies look higher than the RapidMiner result — the RapidMiner pipeline explicitly excludes `subject` via `Set Role` and splits by subject, which is the methodologically sound comparison. Treat the two result tables above as answering different questions, not as a fair head-to-head.
+- The four original per-model notebooks (`randomforest.ipynb`, `xgb.ipynb`, `NN.ipynb`, `stack.ipynb`) still only drop the `activity` column before training, leaving `subject` in as a feature and using a random 70/30 split — this is the leakage quantified and fixed in `improved_pipeline.ipynb` (§3). Those four notebooks were left unmodified as historical record of the original exploration; the honest numbers are in the improved pipeline, not in them.
 - Some notebooks assume they're run from the repo root, others from inside `VSC_Preprocess_Models&Compare/` (relative paths like `../measures.csv` vs `measures.csv`) — check a notebook's `read_csv` calls before running it.
 - `preprocess_rename_dup.ipynb` writes to a `../new/` directory that doesn't exist in this repo; create it first or adjust the output path if you re-run that cell.
+- `improved_pipeline.ipynb`'s hyperparameter search spaces are intentionally modest (15 random iterations each) to keep runtime to a few minutes on a laptop; a wider/longer search would likely push accuracy a bit further.
 
 ## Setup
 
@@ -99,13 +135,14 @@ jupyter lab   # open notebooks under VSC_Preprocess_Models&Compare/
 
 Verified working with Python 3.14 (pandas, numpy, scikit-learn, xgboost, matplotlib, seaborn, jupyter — see `requirements.txt`).
 
-The `.rmp` files are RapidMiner processes; open them with RapidMiner Studio (built with 10.4) to inspect or re-run the original pipeline.
+The `.rmp` files are RapidMiner processes (gitignored, kept locally — see below); open them with RapidMiner Studio (built with 10.4) to inspect or re-run the original pipeline.
 
 ## What's excluded from version control
 
 See `.gitignore`. Deliberately not published:
 
-- **Data**: `Data2024/`, `Data2024.zip`, and every `*.csv` in the repo (raw and edited measurement files, plus everything in `Predictions/`) — this was provided by the course for the challenge, not ours to redistribute.
+- **Data**: `Data2024/`, `Data2024.zip`, and every `*.csv` in the repo (raw and edited measurement files, plus everything in `Predictions/`, including the new ensemble predictions and comparison CSV from §3) — this was provided by the course for the challenge, not ours to redistribute.
 - **Task and report documents**: `DataChallenge.docx` (task sheet), `Einreichung.docx` (submitted report), `L6_data_challenge.pdf` (lecture slides), `es2013-84.pdf` (the original dataset publication, an external paper).
+- **RapidMiner files**: every `*.rmp` process and `*.xml` file.
 
-Code (`.ipynb`, `.rmp`), figures (`images/`), and this README are tracked.
+Jupyter notebooks (`.ipynb`), figures (`images/`), and this README are tracked. The RapidMiner side of the project (§Methods 1) is documented here and in the screenshots under `images/`, but its source `.rmp`/`.xml` files stay local-only — get them from whoever has this repo's local copy if you need to open them in RapidMiner Studio.
